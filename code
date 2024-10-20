@@ -1,3 +1,5 @@
+```
+
 //+------------------------------------------------------------------+
 //|                                                           Remake  |
 //|                                  Copyright 2024, MetaQuotes Ltd. |
@@ -381,3 +383,4 @@ bool ClosePositions(int positionType)
     }
     return true; // Successfully closed positions
 }
+```
