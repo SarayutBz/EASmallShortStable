@@ -1,0 +1,383 @@
+//+------------------------------------------------------------------+
+//|                                                           Remake  |
+//|                                  Copyright 2024, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com  |
+//+------------------------------------------------------------------+
+
+#include <Trade\Trade.mqh>
+
+static input long InpMagicnumber = 546812;
+static input double InpLotSize = 0.01;
+input int InpRSIPeriod = 21;
+input int InpRSILevel = 70;
+input int InpMAPeriod = 21;
+input ENUM_TIMEFRAMES InpmaTimeframe = PERIOD_H1;
+input int InpStopLoss = 200;
+input int InpTakeProfit = 100;
+input bool InpCloseSignal = false;
+input bool InpEnableTrailingStop = true; // Enable trailing stop
+input int InpTrailingStopDistance = 50; // Trailing stop distance in points
+
+int handleRSI;
+int handleMA;
+double bufferRSI[];
+double bufferMA[];
+MqlTick currentTick;
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    // Check user inputs
+    if (InpMagicnumber <= 0)
+    {
+        Alert("Magic number must be greater than 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpLotSize <= 0 || InpLotSize > 10)
+    {
+        Alert("Lot size must be between 0 and 10");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpRSIPeriod <= 1)
+    {
+        Alert("RSI period must be greater than 1");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpRSILevel >= 100 || InpRSILevel <= 50)
+    {
+        Alert("RSI level must be between 50 and 100");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpMAPeriod <= 1)
+    {
+        Alert("MA period must be greater than 1");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpStopLoss < 0)
+    {
+        Alert("Stop loss must be >= 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    if (InpTakeProfit < 0)
+    {
+        Alert("Take profit must be >= 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
+    // Set magic number to trade object
+    trade.SetExpertMagicNumber(InpMagicnumber);
+
+    // Create indicator handles
+    handleRSI = iRSI(_Symbol, PERIOD_CURRENT, InpRSIPeriod, PRICE_OPEN);
+    if (handleRSI == INVALID_HANDLE)
+    {
+        Alert("Failed to create RSI indicator handle");
+        return INIT_FAILED; // Return failure if handle creation fails
+    }
+
+    handleMA = iMA(_Symbol, InpmaTimeframe, InpMAPeriod, 0, MODE_SMA, PRICE_OPEN);
+    if (handleMA == INVALID_HANDLE)
+    {
+        Alert("Failed to create MA indicator handle");
+        return INIT_FAILED; // Return failure if handle creation fails
+    }
+
+    // Set buffer as series
+    ArraySetAsSeries(bufferRSI, true);
+    ArraySetAsSeries(bufferMA, true);
+
+    return INIT_SUCCEEDED; // Initialization succeeded
+}
+
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    // Release indicator handles
+    if (handleRSI != INVALID_HANDLE)
+    {
+        IndicatorRelease(handleRSI);
+    }
+
+    if (handleMA != INVALID_HANDLE)
+    {
+        IndicatorRelease(handleMA);
+    }
+}
+//+------------------------------------------------------------------+
+
+void OnTick()
+{
+    // Check for new bar
+    if (!IsNewBar())
+        return;
+
+    // Get current tick
+    if (!SymbolInfoTick(_Symbol, currentTick))
+    {
+        Print("Failed to get current tick");
+        return;
+    }
+
+    // Get RSI values
+    int values = CopyBuffer(handleRSI, 0, 0, 2, bufferRSI);
+    if (values != 2)
+    {
+        Print("Failed to get RSI values");
+        return;
+    }
+
+    // Get MA values
+    values = CopyBuffer(handleMA, 0, 0, 1, bufferMA);
+    if (values != 1)
+    {
+        Print("Failed to get MA values");
+        return;
+    }
+
+    Comment("bufferRSI [0]:", bufferRSI[0], 
+            "\nbufferRSI[1]:", bufferRSI[1],
+            "\nbufferMA[0]:", bufferMA[0]);
+
+    // Count open positions
+    int cntBuy = 0, cntSell = 0; // Initialize counters
+    if (!CountOpenPositions(cntBuy, cntSell))
+    {
+        return;
+    }
+
+    // Check for buy position
+    if (cntBuy == 0 && bufferRSI[1] >= (100 - InpRSILevel) && bufferRSI[0] < (100 - InpRSILevel) && currentTick.ask > bufferMA[0])
+    {
+        if (InpCloseSignal)
+        {
+            if (!ClosePositions(2))
+            {
+                return;
+            }
+        }
+
+        double sl = InpStopLoss == 0 ? 0 : currentTick.bid - InpStopLoss * _Point;
+        double tp = InpTakeProfit == 0 ? 0 : currentTick.bid + InpTakeProfit * _Point;
+
+        if (!NormalizePrice(sl)) { return; }
+        if (!NormalizePrice(tp)) { return; }
+
+        trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, InpLotSize, currentTick.ask, sl, tp, "RSI MA filter EA");
+        // ลบการแจ้งเตือนการเปิดตำแหน่ง
+        // SendNotification("Open Buy Position at " + DoubleToString(currentTick.ask, _Digits));
+    }
+
+    // Check for sell position
+    if (cntSell == 0 && bufferRSI[1] <= InpRSILevel && bufferRSI[0] > InpRSILevel && currentTick.bid < bufferMA[0])
+    {
+        if (InpCloseSignal)
+        {
+            if (!ClosePositions(1))
+            {
+                return;
+            }
+        }
+
+        double sl = InpStopLoss == 0 ? 0 : currentTick.ask + InpStopLoss * _Point;
+        double tp = InpTakeProfit == 0 ? 0 : currentTick.ask - InpTakeProfit * _Point;
+
+        if (!NormalizePrice(sl)) { return; }
+        if (!NormalizePrice(tp)) { return; }
+
+        trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, InpLotSize, currentTick.bid, sl, tp, "RSI MA filter EA");
+        // ลบการแจ้งเตือนการเปิดตำแหน่ง
+        // SendNotification("Open Sell Position at " + DoubleToString(currentTick.bid, _Digits));
+    }
+
+    // Manage trailing stop
+    if (InpEnableTrailingStop)
+    {
+        ManageTrailingStop();
+    }
+}
+
+// Corrected function name and logic
+bool IsNewBar()
+{
+    static datetime previousTime = 0;
+    datetime currentTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+    
+    if (previousTime != currentTime)
+    {
+        previousTime = currentTime;
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+// Count open positions
+bool CountOpenPositions(int &cntBuy, int &cntSell)
+{
+    cntBuy = 0;
+    cntSell = 0;
+
+    // Get total number of positions
+    int total = PositionsTotal();
+    for (int i = total - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (ticket <= 0)
+        {
+            Print("Failed to get position ticket");
+            return false;
+        }
+        
+        if (!PositionSelectByTicket(ticket))
+        {
+            Print("Failed to select position");
+            return false;
+        }
+
+        long magic;
+        if (!PositionGetInteger(POSITION_MAGIC, magic))
+        {
+            Print("Failed to get position magic number");
+            return false;
+        }
+
+        // Check if the position's magic number matches the input magic number
+        if (magic == InpMagicnumber)
+        {
+            long type;
+            if (!PositionGetInteger(POSITION_TYPE, type))
+            {
+                Print("Failed to get position type");
+                return false;
+            }
+            // Count buy and sell positions
+            if (type == POSITION_TYPE_BUY)
+            {
+                cntBuy++;
+            }
+            else if (type == POSITION_TYPE_SELL)
+            {
+                cntSell++;
+            }
+        }
+    }
+    return true; // Successfully counted positions
+}
+
+//+------------------------------------------------------------------+
+// Normalize price to correct number of digits
+bool NormalizePrice(double &price)
+{
+    double tickSize = 0;
+    if (!SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE, tickSize))
+    {
+        Print("Failed to get tick size");
+        return false;
+    }
+
+    price = NormalizeDouble(MathRound(price / tickSize) * tickSize, _Digits);
+    return true;
+}
+
+//+------------------------------------------------------------------+
+// Manage trailing stop
+void ManageTrailingStop()
+{
+    int total = PositionsTotal();
+    for (int i = total - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (ticket <= 0)
+        {
+            Print("Failed to get position ticket");
+            continue;
+        }
+
+        if (!PositionSelectByTicket(ticket))
+        {
+            Print("Failed to select position");
+            continue;
+        }
+
+        double sl = PositionGetDouble(POSITION_SL);
+        double currentPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        double currentStopLoss = sl;
+
+        if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+        {
+            double newStopLoss = currentPrice + InpTrailingStopDistance * _Point;
+            if (newStopLoss > currentStopLoss || currentStopLoss == 0)
+            {
+                trade.PositionModify(ticket, newStopLoss, 0);
+            }
+        }
+        else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+        {
+            double newStopLoss = currentPrice - InpTrailingStopDistance * _Point;
+            if (newStopLoss < currentStopLoss || currentStopLoss == 0)
+            {
+                trade.PositionModify(ticket, newStopLoss, 0);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+// Close positions based on the type
+bool ClosePositions(int positionType)
+{
+    int total = PositionsTotal();
+    for (int i = total - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (ticket <= 0)
+        {
+            Print("Failed to get position ticket");
+            return false;
+        }
+
+        if (!PositionSelectByTicket(ticket))
+        {
+            Print("Failed to select position");
+            return false;
+        }
+
+        long magic;
+        if (!PositionGetInteger(POSITION_MAGIC, magic))
+        {
+            Print("Failed to get position magic number");
+            return false;
+        }
+
+        // Check if the position's magic number matches the input magic number
+        if (magic == InpMagicnumber)
+        {
+            long type;
+            if (!PositionGetInteger(POSITION_TYPE, type))
+            {
+                Print("Failed to get position type");
+                return false;
+            }
+
+            // Close positions based on type
+            if (type == POSITION_TYPE_BUY && positionType == 2)
+            {
+                trade.PositionClose(ticket);
+            }
+            else if (type == POSITION_TYPE_SELL && positionType == 1)
+            {
+                trade.PositionClose(ticket);
+            }
+        }
+    }
+    return true; // Successfully closed positions
+}
