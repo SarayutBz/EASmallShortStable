@@ -1,4 +1,4 @@
-```
+
 
 //+------------------------------------------------------------------+
 //|                                                           Remake  |
@@ -383,4 +383,4 @@ bool ClosePositions(int positionType)
     }
     return true; // Successfully closed positions
 }
-```
+
